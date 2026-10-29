@@ -1,0 +1,61 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Prepare source tree (also supports a single ZIP upload)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f settings.gradle.kts && -f app/build.gradle.kts ]]; then
+            echo "Project source is already present at repository root."
+            exit 0
+          fi
+          mapfile -t archives < <(find . -maxdepth 1 -type f -iname '*.zip' | sort)
+          if [[ "${#archives[@]}" -ne 1 ]]; then
+            echo "Expected project files at repository root or exactly one root-level ZIP archive."
+            echo "Root-level ZIP files found: ${#archives[@]}"
+            ls -la
+            exit 1
+          fi
+          unpack_dir="$RUNNER_TEMP/sorinote-zip-source"
+          mkdir -p "$unpack_dir"
+          unzip -q "${archives[0]}" -d "$unpack_dir"
+          project_root="$(find "$unpack_dir" -mindepth 1 -maxdepth 4 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
+          if [[ -z "$project_root" || ! -f "$project_root/app/build.gradle.kts" ]]; then
+            echo "ZIP does not contain a valid SoriNote Android project root."
+            find "$unpack_dir" -maxdepth 3 -print
+            exit 1
+          fi
+          cp -a "$project_root"/. "$GITHUB_WORKSPACE"/
+          echo "Source extracted from ${archives[0]}"
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK, NDK and CMake
+        uses: android-actions/setup-android@v3
+      - name: Install Android build packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APK (includes whisper.cpp native engine)
+        run: gradle --no-daemon assembleDebug
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sorinote-free-whisper-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
