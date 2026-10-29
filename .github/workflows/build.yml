@@ -239,7 +239,7 @@ jobs:
           print(f"package_name={package_name_value}")
           if not (Path('app/src/main/cpp/CMakeLists.txt').exists() or Path('app/src/main/java').exists()):
               raise SystemExit('No recognizable Android app sources found in the project.')
-          print('Android manifest XML and general project structure: PASS')
+          print('Android manifest XML and general project structure: PASS', file=__import__('sys').stderr)
           PY
 
       - name: Build installable Debug APK
