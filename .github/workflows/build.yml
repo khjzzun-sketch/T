@@ -20,16 +20,22 @@ jobs:
             echo "Project source is already present at repository root."
             exit 0
           fi
-          mapfile -t archives < <(find . -maxdepth 1 -type f -iname '*.zip' | sort)
-          if [[ "${#archives[@]}" -ne 1 ]]; then
-            echo "Expected project files at repository root or exactly one root-level ZIP archive."
-            echo "Root-level ZIP files found: ${#archives[@]}"
+          # Prefer SoriNote versioned archives and choose the highest version so an older
+          # archive already in the repository does not block a newer upload.
+          mapfile -t archives < <(find . -maxdepth 1 -type f -iname 'SoriNote_Free_Whisper_GitHub_ZIP_Only_v*.zip' | sort -V)
+          if [[ "${#archives[@]}" -eq 0 ]]; then
+            mapfile -t archives < <(find . -maxdepth 1 -type f -iname '*.zip' | sort)
+          fi
+          if [[ "${#archives[@]}" -eq 0 ]]; then
+            echo "Expected project files at repository root or at least one root-level ZIP archive."
             ls -la
             exit 1
           fi
+          archive="${archives[${#archives[@]}-1]}"
           unpack_dir="$RUNNER_TEMP/sorinote-zip-source"
+          rm -rf "$unpack_dir"
           mkdir -p "$unpack_dir"
-          unzip -q "${archives[0]}" -d "$unpack_dir"
+          unzip -q "$archive" -d "$unpack_dir"
           project_root="$(find "$unpack_dir" -mindepth 1 -maxdepth 4 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
           if [[ -z "$project_root" || ! -f "$project_root/app/build.gradle.kts" ]]; then
             echo "ZIP does not contain a valid SoriNote Android project root."
@@ -37,7 +43,7 @@ jobs:
             exit 1
           fi
           cp -a "$project_root"/. "$GITHUB_WORKSPACE"/
-          echo "Source extracted from ${archives[0]}"
+          echo "Source extracted from ${archive}"
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
