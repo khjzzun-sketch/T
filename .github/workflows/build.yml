@@ -32,6 +32,8 @@ jobs:
             exit 1
           fi
           archive="${archives[${#archives[@]}-1]}"
+          echo "Selected project ZIP: ${archive}"
+          unzip -t "${archive}"
           unpack_dir="$RUNNER_TEMP/sorinote-zip-source"
           rm -rf "$unpack_dir"
           mkdir -p "$unpack_dir"
@@ -49,20 +51,33 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Set up Android SDK, NDK and CMake
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@v4
         with:
-          # The action's legacy default may request the removed SDK package "tools".
-          # Install only platform-tools here; required build packages are installed below.
-          packages: 'platform-tools'
+          # The action installs command-line tools; build packages are installed explicitly below.
+          packages: ''
       - name: Install Android build packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.0.12077973"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Verify build tools
+        run: |
+          java -version
+          gradle --version
+          cmake --version
+          sdkmanager --list_installed
       - name: Build debug APK (includes whisper.cpp native engine)
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon --stacktrace assembleDebug
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
