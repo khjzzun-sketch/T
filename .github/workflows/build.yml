@@ -1,86 +1,152 @@
-name: Build Android APK
+name: SoriNote Android APK
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    paths:
+      - 'SoriNote_Free_Whisper_GitHub_ZIP_Only_v0.6.0.zip'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sorinote-android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build arm64 Debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 50
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Prepare source tree (also supports a single ZIP upload)
+
+      - name: Locate and validate source ZIP
+        id: source
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f settings.gradle.kts && -f app/build.gradle.kts ]]; then
-            echo "Project source is already present at repository root."
-            exit 0
-          fi
-          # Prefer SoriNote versioned archives and choose the highest version so an older
-          # archive already in the repository does not block a newer upload.
-          mapfile -t archives < <(find . -maxdepth 1 -type f -iname 'SoriNote_Free_Whisper_GitHub_ZIP_Only_v*.zip' | sort -V)
-          if [[ "${#archives[@]}" -eq 0 ]]; then
-            mapfile -t archives < <(find . -maxdepth 1 -type f -iname '*.zip' | sort)
-          fi
-          if [[ "${#archives[@]}" -eq 0 ]]; then
-            echo "Expected project files at repository root or at least one root-level ZIP archive."
-            ls -la
+          source_archive="$GITHUB_WORKSPACE/SoriNote_Free_Whisper_GitHub_ZIP_Only_v0.6.0.zip"
+          if [[ ! -s "$source_archive" ]]; then
+            echo "Required source ZIP is missing from repository root: $(basename "$source_archive")"
+            echo "Upload the ZIP to the repository root, then run this workflow again."
             exit 1
           fi
-          archive="${archives[${#archives[@]}-1]}"
-          echo "Selected project ZIP: ${archive}"
-          unzip -t "${archive}"
-          unpack_dir="$RUNNER_TEMP/sorinote-zip-source"
+          python3 - "$source_archive" <<'PY'
+          import sys, zipfile
+          p = sys.argv[1]
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              names = set(z.namelist())
+              if bad:
+                  raise SystemExit(f"ZIP CRC failure: {bad}")
+              required = {
+                  "settings.gradle.kts",
+                  "build.gradle.kts",
+                  "app/build.gradle.kts",
+                  "app/src/main/AndroidManifest.xml",
+                  "app/src/main/cpp/CMakeLists.txt",
+              }
+              missing = sorted(required - names)
+              if missing:
+                  raise SystemExit("ZIP root layout invalid; missing: " + ", ".join(missing))
+          print("ZIP integrity and flat project-root layout: PASS")
+          PY
+
+      - name: Apply ZIP source to workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpack_dir="$RUNNER_TEMP/sorinote-source"
           rm -rf "$unpack_dir"
           mkdir -p "$unpack_dir"
-          unzip -q "$archive" -d "$unpack_dir"
-          project_root="$(find "$unpack_dir" -mindepth 1 -maxdepth 4 -type f -name settings.gradle.kts -print -quit | xargs -r dirname)"
-          if [[ -z "$project_root" || ! -f "$project_root/app/build.gradle.kts" ]]; then
-            echo "ZIP does not contain a valid SoriNote Android project root."
-            find "$unpack_dir" -maxdepth 3 -print
-            exit 1
-          fi
-          cp -a "$project_root"/. "$GITHUB_WORKSPACE"/
-          echo "Source extracted from ${archive}"
+          unzip -q "$GITHUB_WORKSPACE/SoriNote_Free_Whisper_GitHub_ZIP_Only_v0.6.0.zip" -d "$unpack_dir"
+          cp -a "$unpack_dir"/. "$GITHUB_WORKSPACE"/
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          echo "Applied SoriNote v0.6.0 source from root ZIP."
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
         with:
-          # The action installs command-line tools; build packages are installed explicitly below.
-          packages: ''
-      - name: Install Android build packages
+          # Explicitly avoid asking sdkmanager for the removed legacy package 'tools'.
+          packages: 'platform-tools'
+
+      - name: Install pinned Android build packages
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --install \
-            "platform-tools" \
+          sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "cmake;3.22.1" \
             "ndk;27.0.12077973"
-      - name: Set up Gradle
+
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Verify build tools
+
+      - name: Verify source/version/native settings
+        shell: bash
         run: |
-          java -version
-          gradle --version
-          cmake --version
-          sdkmanager --list_installed
-      - name: Build debug APK (includes whisper.cpp native engine)
-        run: gradle --no-daemon --stacktrace assembleDebug
-      - name: Upload APK artifact
+          set -euo pipefail
+          grep -q 'versionCode = 5' app/build.gradle.kts
+          grep -q 'versionName = "0.6.0-free-whisper-live"' app/build.gradle.kts
+          grep -q 'abiFilters.add("arm64-v8a")' app/build.gradle.kts
+          grep -q -- '-DCMAKE_BUILD_TYPE=Release' app/build.gradle.kts
+          grep -q 'GIT_TAG v1.9.5' app/src/main/cpp/CMakeLists.txt
+          grep -q 'EXPECTED_SHA1 = "e050f7970618a659205450ad97eb95a18d69c9ee"' app/src/main/java/com/example/sorinote/ModelManager.kt
+          ! grep -R -E 'com\.google\.mlkit\.nl\.translate\.DownloadConditions|com\.google\.mlkit\.common\.model\.DownloadConditions' app/src/main/java
+          echo "Source/version/native checks: PASS"
+
+      - name: Build debug APK (Android + whisper.cpp native engine)
+        run: gradle --no-daemon --stacktrace clean assembleDebug
+
+      - name: Verify APK package and output
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$apk"
+          unzip -t "$apk" >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | grep -F "package: name='com.example.sorinote'"
+          sha256sum "$apk" | tee apk-sha256.txt
+          echo "apk_path=$apk" >> "$GITHUB_OUTPUT"
+          echo "APK exists, ZIP integrity and package identity: PASS"
+
+      - name: Add build receipt
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## SoriNote v0.6.0 build receipt"
+            echo "- Source ZIP: SoriNote_Free_Whisper_GitHub_ZIP_Only_v0.6.0.zip"
+            echo "- Engine: whisper.cpp v1.9.5 (arm64-v8a)"
+            echo "- Model: ggml-large-v3-turbo-q5_0.bin (downloaded in app; not bundled in APK)"
+            if [[ -s app/build/outputs/apk/debug/app-debug.apk ]]; then
+              echo "- APK: created"
+              sha256sum app/build/outputs/apk/debug/app-debug.apk
+            else
+              echo "- APK: not created; inspect the failed job step above"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload installable APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sorinote-free-whisper-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: sorinote-v0.6.0-free-whisper-live-arm64-debug-apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            apk-sha256.txt
           if-no-files-found: error
+          retention-days: 14
