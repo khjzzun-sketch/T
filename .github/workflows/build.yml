@@ -45,6 +45,10 @@ jobs:
           java-version: '17'
       - name: Set up Android SDK, NDK and CMake
         uses: android-actions/setup-android@v3
+        with:
+          # The action's legacy default may request the removed SDK package "tools".
+          # Install only platform-tools here; required build packages are installed below.
+          packages: 'platform-tools'
       - name: Install Android build packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
       - name: Set up Gradle
