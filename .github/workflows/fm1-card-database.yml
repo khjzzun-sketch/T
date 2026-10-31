@@ -1,0 +1,44 @@
+name: FM1 Card Database Crawler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * 0"
+  push:
+    branches: [ main, master ]
+    paths:
+      - "fm1_crawler/**"
+      - ".github/workflows/fm1-card-database.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: fm1_crawler/requirements.txt
+      - name: Install crawler dependencies
+        working-directory: fm1_crawler
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Run card crawler
+        working-directory: fm1_crawler
+        run: python crawl.py
+      - name: Upload database, images and crawl evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: FM1-card-database
+          path: fm1_crawler/output/
+          if-no-files-found: warn
+          retention-days: 30
