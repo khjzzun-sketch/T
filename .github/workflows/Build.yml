@@ -62,6 +62,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Google removed the legacy 'tools' package. Explicitly install only
+          # platform-tools to prevent sdkmanager from failing during setup.
+          packages: 'platform-tools'
 
       - name: Install Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
@@ -69,12 +73,17 @@ jobs:
           gradle-version: '8.9'
 
       - name: Install Android SDK components
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Verify APK output
+        run: test -s app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
