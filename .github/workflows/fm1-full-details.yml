@@ -2,6 +2,11 @@ name: FM1 Full Card Detail Enrichment
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "fm1_crawler/crawl_details.py"
+      - ".github/workflows/fm1-full-details.yml"
 
 permissions:
   contents: read
