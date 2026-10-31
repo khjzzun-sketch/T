@@ -76,9 +76,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
+          set +e
+          yes | sdkmanager --licenses >/dev/null
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+
+          sdk_status="${statuses[1]}"
+          if [ "$sdk_status" -ne 0 ]; then
+            echo "::error::sdkmanager license acceptance failed (exit code: $sdk_status)"
+            exit "$sdk_status"
+          fi
+
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
