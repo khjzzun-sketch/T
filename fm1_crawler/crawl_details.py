@@ -41,7 +41,7 @@ async def ensure_all_cards(page):
   if not await btn.count(): raise RuntimeError(f"더 보기 버튼이 없어짐: {before}/{total}")
   await btn.first.scroll_into_view_if_needed()
   await btn.first.click(timeout=30000)
-  await page.wait_for_function("(s,n)=>document.querySelectorAll(s).length>n",arg=[CARD_SEL,before],timeout=60000)
+  await page.wait_for_function("({selector, previous}) => document.querySelectorAll(selector).length > previous",arg={"selector":CARD_SEL,"previous":before},timeout=60000)
   print(f"LIST {await page.locator(CARD_SEL).count()}/{total}",flush=True)
  if await page.locator(CARD_SEL).count()!=total: raise RuntimeError("목록 수량 불일치")
  return total
