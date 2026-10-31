@@ -1,179 +1,28 @@
-name: SoriNote Android APK
+name: Android APK
 
 on:
-  push:
-    paths:
-      - '*.zip'
-      - '**/*.zip'
-      - '.github/workflows/android-build.yml'
   workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/android.yml'
 
 permissions:
   contents: read
 
-concurrency:
-  group: sorinote-android-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: Build Android Debug APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Find the uploaded Android project ZIP (filename and app version independent)
-        id: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import json, os, subprocess, zipfile
-          from pathlib import Path, PurePosixPath
-
-          repo = Path.cwd()
-          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-
-          def project_root_in_zip(archive: Path):
-              try:
-                  with zipfile.ZipFile(archive) as z:
-                      if z.testzip() is not None:
-                          return None, "ZIP CRC/integrity error"
-                      names = {PurePosixPath(n).as_posix().lstrip("./") for n in z.namelist() if not n.endswith("/")}
-                      roots = []
-                      for name in names:
-                          p = PurePosixPath(name)
-                          if p.name != "settings.gradle.kts" and p.name != "settings.gradle":
-                              continue
-                          root = p.parent.as_posix()
-                          if root == ".": root = ""
-                          prefix = f"{root}/" if root else ""
-                          has_gradle = any(prefix + pth in names for pth in ("app/build.gradle.kts", "app/build.gradle"))
-                          has_manifest = prefix + "app/src/main/AndroidManifest.xml" in names
-                          if has_gradle and has_manifest:
-                              roots.append(root)
-                      if not roots:
-                          return None, "does not contain settings.gradle(.kts), app/build.gradle(.kts), and AndroidManifest.xml in one project root"
-                      roots.sort(key=lambda x: (len(PurePosixPath(x).parts) if x else 0, x))
-                      return roots[0], None
-              except (OSError, zipfile.BadZipFile) as e:
-                  return None, str(e)
-
-          candidates = sorted(p for p in repo.glob("*.zip") if p.is_file())
-          changed_roots = []
-          if event_name == "push":
-              try:
-                  event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-                  before = event.get("before", "")
-                  sha = os.environ.get("GITHUB_SHA", "HEAD")
-                  if before and set(before) != {"0"}:
-                      changed = subprocess.check_output(["git", "diff", "--name-only", before, sha], text=True).splitlines()
-                  else:
-                      changed = subprocess.check_output(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha], text=True).splitlines()
-                  changed_roots = [repo / n for n in changed if PurePosixPath(n).parent.as_posix() == "." and n.lower().endswith(".zip") and (repo / n).is_file()]
-              except Exception as e:
-                  print(f"Could not enumerate changed ZIPs; will inspect root ZIPs instead: {e}")
-
-          changed_valid = [(p, project_root_in_zip(p)[0]) for p in changed_roots if project_root_in_zip(p)[1] is None]
-          if len(changed_valid) == 1:
-              selected, inner_root = changed_valid[0]
-          elif len(changed_valid) > 1:
-              choices = ", ".join(p.name for p, _ in changed_valid)
-              raise SystemExit(f"More than one valid Android project ZIP changed in this push: {choices}. Upload one source ZIP per commit.")
-          else:
-              valid = []
-              for p in candidates:
-                  root, error = project_root_in_zip(p)
-                  if error is None:
-                      try:
-                          stamp = int(subprocess.check_output(["git", "log", "-1", "--format=%ct", "--", p.name], text=True).strip() or "0")
-                      except Exception:
-                          stamp = int(p.stat().st_mtime)
-                      valid.append((stamp, p.stat().st_size, p.name, p, root))
-              if not valid:
-                  raise SystemExit("No root ZIP contains a valid Android project. Upload the project ZIP to the repository root; its filename and app version do not matter.")
-              valid.sort()
-              _, _, _, selected, inner_root = valid[-1]
-
-          root_text = inner_root or "."
-          with zipfile.ZipFile(selected) as z:
-              if z.testzip() is not None:
-                  raise SystemExit(f"ZIP integrity test failed: {selected.name}")
-          output = Path(os.environ["GITHUB_OUTPUT"])
-          with output.open("a") as f:
-              f.write(f"archive={selected.name}\n")
-              f.write(f"project_root={root_text}\n")
-          print(f"Selected source archive: {selected.name}")
-          print(f"Project root within archive: {root_text}")
-          print("Archive filename and app version are not hard-coded.")
-          PY
-
-      - name: Apply project ZIP without replacing this fixed workflow
-        env:
-          SOURCE_ARCHIVE: ${{ steps.source.outputs.archive }}
-          PROJECT_ROOT: ${{ steps.source.outputs.project_root }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import os, shutil, zipfile
-          from pathlib import Path, PurePosixPath
-
-          archive = Path(os.environ["SOURCE_ARCHIVE"])
-          root = os.environ["PROJECT_ROOT"]
-          prefix = "" if root == "." else root.rstrip("/") + "/"
-          dest = Path.cwd().resolve()
-          # Start clean so removed files from the new ZIP cannot survive as stale source.
-          # Keep Git metadata, the fixed repository workflow, and source ZIP archives only.
-          for child in list(dest.iterdir()):
-              if child.name in {".git", ".github"} or (child.is_file() and child.suffix.lower() == ".zip"):
-                  continue
-              if child.is_dir(): shutil.rmtree(child)
-              else: child.unlink()
-          skip_exact = {".git", ".github", ".gradle", "build", "local.properties"}
-          count = 0
-          with zipfile.ZipFile(archive) as z:
-              for info in z.infolist():
-                  if info.is_dir():
-                      continue
-                  name = PurePosixPath(info.filename)
-                  safe_name = name.as_posix()
-                  if safe_name.startswith("/") or ".." in name.parts:
-                      raise SystemExit(f"Unsafe archive path: {safe_name}")
-                  if not safe_name.startswith(prefix):
-                      continue
-                  rel = safe_name[len(prefix):]
-                  if not rel:
-                      continue
-                  parts = PurePosixPath(rel).parts
-                  if not parts or any(part in skip_exact for part in parts):
-                      continue
-                  if any(part in {".git", ".gradle", "build"} for part in parts):
-                      continue
-                  if rel.endswith((".apk", ".aab", ".class")):
-                      continue
-                  target = (dest / Path(*parts)).resolve()
-                  if dest != target and dest not in target.parents:
-                      raise SystemExit(f"Archive path escapes workspace: {rel}")
-                  target.parent.mkdir(parents=True, exist_ok=True)
-                  with z.open(info) as src, target.open("wb") as dst:
-                      shutil.copyfileobj(src, dst)
-                  count += 1
-          required = [Path("settings.gradle.kts"), Path("app/build.gradle.kts"), Path("app/src/main/AndroidManifest.xml")]
-          # Accept either Gradle settings file suffix; Kotlin DSL is used by the current app.
-          if not Path("settings.gradle.kts").exists() and Path("settings.gradle").exists():
-              required[0] = Path("settings.gradle")
-          if not Path("app/build.gradle.kts").exists() and Path("app/build.gradle").exists():
-              required[1] = Path("app/build.gradle")
-          missing = [str(p) for p in required if not p.is_file()]
-          if missing:
-              raise SystemExit("Extracted project is incomplete: " + ", ".join(missing))
-          print(f"Applied {count} project files from {archive.name}; preserved repository .github/workflows.")
-          PY
+      - name: Test game rules
+        run: node --test tests/rules.test.cjs
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -183,126 +32,24 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
 
-      - name: Install Android build packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY' > /tmp/android-packages.txt
-          import re
-          from pathlib import Path
-          gradle = Path('app/build.gradle.kts').read_text(errors='replace') if Path('app/build.gradle.kts').exists() else Path('app/build.gradle').read_text(errors='replace')
-          m = re.search(r'compileSdk\s*(?:=\s*)?(?:\(?\s*)(\d+)', gradle)
-          compile_sdk = m.group(1) if m else '35'
-          cm = re.search(r'version\s*=\s*["\']([0-9.]+)["\']', gradle)
-          cmake_version = cm.group(1) if cm else '3.22.1'
-          ndk = re.search(r'ndkVersion\s*=\s*["\']([^"\']+)["\']', gradle)
-          ndk_version = ndk.group(1) if ndk else '27.0.12077973'
-          print(f'platforms;android-{compile_sdk}')
-          print('build-tools;35.0.0')
-          if 'externalNativeBuild' in gradle or Path('app/src/main/cpp/CMakeLists.txt').exists():
-              print(f'cmake;{cmake_version}')
-              print(f'ndk;{ndk_version}')
-          PY
-          mapfile -t packages < /tmp/android-packages.txt
-          echo "Installing Android SDK packages: ${packages[*]}"
-          sdkmanager --install "${packages[@]}"
-
-      - name: Set up Gradle fallback
+      - name: Install Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Validate extracted Android project (version-independent)
-        id: metadata
-        shell: bash
+      - name: Install Android SDK components
         run: |
-          set -euo pipefail
-          python3 <<'PY' >> "$GITHUB_OUTPUT"
-          import re, xml.etree.ElementTree as ET
-          from pathlib import Path
-          manifest = ET.parse('app/src/main/AndroidManifest.xml').getroot()
-          gradle_path = Path('app/build.gradle.kts') if Path('app/build.gradle.kts').exists() else Path('app/build.gradle')
-          gradle = gradle_path.read_text(errors='replace')
-          version_name = re.search(r'versionName\s*=\s*["\']([^"\']+)', gradle)
-          version_code = re.search(r'versionCode\s*=\s*(\d+)', gradle)
-          package_name = re.search(r'applicationId\s*=\s*["\']([^"\']+)', gradle)
-          if not package_name:
-              ns = '{http://schemas.android.com/apk/res/android}'
-              package_name_value = manifest.attrib.get('package', 'unknown')
-          else:
-              package_name_value = package_name.group(1)
-          print(f"version_name={version_name.group(1) if version_name else 'unspecified'}")
-          print(f"version_code={version_code.group(1) if version_code else 'unspecified'}")
-          print(f"package_name={package_name_value}")
-          if not (Path('app/src/main/cpp/CMakeLists.txt').exists() or Path('app/src/main/java').exists()):
-              raise SystemExit('No recognizable Android app sources found in the project.')
-          print('Android manifest XML and general project structure: PASS', file=__import__('sys').stderr)
-          PY
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
-      - name: Build installable Debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f gradlew ]]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon --stacktrace clean assembleDebug
-          else
-            gradle --no-daemon --stacktrace clean assembleDebug
-          fi
+      - name: Build debug APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Verify and normalize APK artifact filename
-        shell: bash
-        run: |
-          set -euo pipefail
-          apk="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
-          if [[ -z "$apk" || ! -s "$apk" ]]; then
-            echo "No installable Debug APK was created under app/build/outputs/apk/debug."
-            exit 1
-          fi
-          unzip -t "$apk" >/dev/null
-          cp "$apk" app-debug.apk
-          sha256sum app-debug.apk | tee apk-sha256.txt
-          echo "APK created and ZIP integrity check passed: $apk"
-
-      - name: Write build receipt
-        if: always()
-        env:
-          SOURCE_ARCHIVE: ${{ steps.source.outputs.archive }}
-          APP_VERSION: ${{ steps.metadata.outputs.version_name }}
-          APP_VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
-          APP_PACKAGE: ${{ steps.metadata.outputs.package_name }}
-        shell: bash
-        run: |
-          {
-            echo "## SoriNote Android build receipt"
-            echo "- Source ZIP: ${SOURCE_ARCHIVE:-not selected}"
-            echo "- App version: ${APP_VERSION:-not parsed} (code ${APP_VERSION_CODE:-not parsed})"
-            echo "- Package: ${APP_PACKAGE:-not parsed}"
-            if [[ -s app-debug.apk ]]; then
-              echo "- APK: generated"
-              sha256sum app-debug.apk
-            else
-              echo "- APK: not generated; inspect the failed build step above"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          cat > build-receipt.txt <<EOF2
-          source_zip=${SOURCE_ARCHIVE:-not selected}
-          version_name=${APP_VERSION:-not parsed}
-          version_code=${APP_VERSION_CODE:-not parsed}
-          package=${APP_PACKAGE:-not parsed}
-          EOF2
-
-      - name: Upload installable APK artifact
-        if: success()
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: sorinote-android-debug-apk
-          path: |
-            app-debug.apk
-            apk-sha256.txt
-            build-receipt.txt
+          name: FantasyMastersOffline-debug-v0.1.0
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
