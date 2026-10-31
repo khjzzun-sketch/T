@@ -5,13 +5,8 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'FantasyMastersOffline-source-v0.1.1.zip'
-      - 'app/**'
-      - 'tests/**'
-      - 'build.gradle'
-      - 'settings.gradle'
-      - 'gradle.properties'
-      - '.github/workflows/build.yml'
+      - 'FantasyMastersOffline-source-*.zip'
+      - '.github/workflows/Build.yml'
 
 permissions:
   contents: read
@@ -20,26 +15,36 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout source archive
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract Android project from uploaded ZIP
+      - name: Locate and extract Android project archive
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="FantasyMastersOffline-source-v0.1.1.zip"
-          test -f "$ARCHIVE" || { echo "::error::Project ZIP not found at repository root: $ARCHIVE"; find . -maxdepth 3 -type f -print; exit 1; }
+          mapfile -t archives < <(find . -maxdepth 1 -type f -name 'FantasyMastersOffline-source-*.zip' -print | sort)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one FantasyMastersOffline-source-*.zip at repository root; found ${#archives[@]}"
+            printf 'Root files:\n'
+            find . -maxdepth 1 -type f -printf '%f\n' | sort
+            exit 1
+          fi
+          archive="${archives[0]}"
           mkdir -p .fm-project
-          unzip -q "$ARCHIVE" -d .fm-project
-          TEST_FILE="$(find .fm-project -type f -path '*/tests/rules.test.cjs' -print -quit)"
-          test -n "$TEST_FILE" || { echo "::error::tests/rules.test.cjs not found inside $ARCHIVE"; unzip -l "$ARCHIVE"; exit 1; }
-          ROOT="$(dirname "$(dirname "$TEST_FILE")")"
-          cp -a "$ROOT"/. .
+          unzip -q "$archive" -d .fm-project
+          mapfile -t test_files < <(find .fm-project -type f -path '*/tests/rules.test.cjs' -print)
+          if [ "${#test_files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one tests/rules.test.cjs inside $archive; found ${#test_files[@]}"
+            unzip -l "$archive"
+            exit 1
+          fi
+          project_root="$(dirname "$(dirname "${test_files[0]}")")"
+          for required in settings.gradle build.gradle gradle.properties app/build.gradle app/src/main/AndroidManifest.xml; do
+            test -f "$project_root/$required" || { echo "::error::Missing project file: $required"; exit 1; }
+          done
+          cp -a "$project_root"/. .
           test -f tests/rules.test.cjs
-          test -f settings.gradle
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
-          echo "Project extracted and required files verified."
+          echo "Extracted project from: $archive"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -74,7 +79,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FantasyMastersOffline-debug-v0.1.1
+          name: FantasyMastersOffline-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
